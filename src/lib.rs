@@ -1,2 +1,2 @@
-pub mod client;
-mod ext;
+pub mod gateway;
+pub mod constants;

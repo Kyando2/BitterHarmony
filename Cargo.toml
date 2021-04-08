@@ -1,5 +1,5 @@
 [package]
-name = "BitterHarmony"
+name = "bitter_harmony"
 version = "0.1.0"
 authors = ["Kyando2 <amehikoji@gmail.com>"]
 edition = "2018"
@@ -12,4 +12,5 @@ reqwest = { version = "0.11.2", features = ["blocking", "json"]}
 tungstenite = "0.13.0"
 serde_json = "1.0"
 url = "2.1.0"
+
 
