@@ -8,6 +8,7 @@ use tungstenite::{connect, Message, WebSocket, client::AutoStream};
 use url::Url;
 
 use crate::constants;
+use crate::client::BitterHandler;
 
 pub struct GatePool {
     workers: Vec<Worker>,
@@ -52,9 +53,9 @@ impl GatePool {
         self.sender.clone()
     }
 
-    fn populate(&mut self, stem: Arc<Mutex<WebSocket<AutoStream>>>) -> Arc<Mutex<WebSocket<AutoStream>>> {
+    fn populate(&mut self, stem: Arc<Mutex<WebSocket<AutoStream>>>, handle: Arc<Mutex<dyn BitterHandler>>) -> Arc<Mutex<WebSocket<AutoStream>>> {
         for id in 0..self.size {
-            self.workers.push(Worker::new(id, Arc::clone(&self.receiver), Arc::clone(&stem)))
+            self.workers.push(Worker::new(id, Arc::clone(&self.receiver), Arc::clone(&stem), Arc::clone(&handle)))
         }
         stem
     }
@@ -83,7 +84,19 @@ impl GatePool {
         (heartbeat, streamer)
     }
 
-    fn reader(&mut self, streamer: Ws, sender: mpsc::Sender<Task>, seq_code: Arc<Mutex<&str>>) {
+    pub fn connect(&mut self, handler: Arc<Mutex<dyn BitterHandler>>) {
+        let streamer = self.start_socket();
+        let (heartbeat, streamer) = self.find_heartbeat_duration(streamer);
+        let streamer = self.populate(streamer, handler);
+        let sequence_code = Arc::new(Mutex::new("null"));
+
+        self.reader(Arc::clone(&streamer), self.get_sender(), Arc::clone(&sequence_code));
+        self.heartbeater(Arc::clone(&streamer), self.get_sender(), heartbeat, Arc::clone(&sequence_code));
+
+    }
+
+    //
+    fn reader(&mut self, streamer: Ws, sender: mpsc::Sender<Task>, seq_code: Arc<Mutex<&'static str>>) {
         let reader = thread::spawn(move || {
             // Might wanna do first iteration out of thread to share the required delay
             loop {
@@ -93,25 +106,15 @@ impl GatePool {
         });
     }
 
-    fn heartbeater(&mut self, streamer: Ws, sender: mpsc::Sender<Task>, heartbeat: time::Duration, seq_code: Arc<Mutex<&str>>) {
+    fn heartbeater(&mut self, streamer: Ws, sender: mpsc::Sender<Task>, heartbeat: time::Duration, seq_code: Arc<Mutex<&'static str>>) {
         let heartbeater = thread::spawn(move || {
             loop {
-                sender.send(Task::Heartbeat {metadata: seq_code.lock().unwrap().to_string()});
+                sender.send(Task::Heartbeat {metadata: seq_code.lock().unwrap().to_string()}).unwrap();
                 thread::sleep(heartbeat);
             }
         });
     }
-
-    pub fn connect(&mut self) {
-        let streamer = self.start_socket();
-        let (heartbeat, streamer) = self.find_heartbeat_duration(streamer);
-        let streamer = self.populate(streamer);
-        let sequence_code = Arc::new(Mutex::new("null"));
-
-        self.reader(Arc::clone(&streamer), self.get_sender(), Arc::clone(&sequence_code));
-        self.heartbeater(Arc::clone(&streamer), self.get_sender(), heartbeat, Arc::clone(&sequence_code));
-
-    }
+    //
 }
 
 impl Drop for GatePool {
@@ -131,13 +134,14 @@ impl Drop for GatePool {
     }
 }
 
+/// Redirects the work to the right BitterHandler
 struct Worker {
     id: usize,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Task>>>, streamer: Arc<Mutex<WebSocket<AutoStream>>>) -> Worker {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Task>>>, streamer: Arc<Mutex<WebSocket<AutoStream>>>, handler: Arc<Mutex<dyn BitterHandler>>) -> Worker {
         let thread = Some(thread::spawn(move || {
             loop {
                 let job = receiver.lock().unwrap().recv().unwrap();
